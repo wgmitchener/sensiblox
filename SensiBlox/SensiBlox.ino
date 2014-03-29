@@ -18,6 +18,7 @@ int screen = 4; // Select screen to be shown: 0 - nothing, 1 - light, 2 - temp, 
 #include <avr/pgmspace.h>  // Library with functions to access flash memory
 #include <Adafruit_GFX.h> // Adafruit graphics library - must download from adafruit.com and put in arduino/libraries directory
 #include <Adafruit_PCD8544.h>  // Adafruit library for 5110 LCD & PCD8544 controller - must download from adafruit.com and put in arduino/libraries directory
+#include <math.h>
 
 // Define Arduino pins
 const int  LIGHT_PIN = A0;
@@ -46,6 +47,9 @@ Adafruit_PCD8544 display = Adafruit_PCD8544(8, 9, 10, 12, 11);
 // pin 11 - LCD reset (RST)
 int lcd_refresh_int = 333; // Set interval between screen refreshes
 unsigned long lcd_timestamp=0;
+
+// Define variables for button
+boolean buttonState = false;
 
 // Define variables for BLE Mini
 uint16_t value;
@@ -123,7 +127,115 @@ void loop()
   read_accel();
 
   /*** Receive data ***/
-  while (Serial.available())
+  read_serial_loop();
+
+  /*** Transmit data ***/
+  write_sensor_data_serial();
+  
+  /*** Display data on 5110 LCD ***/
+  // 0 - nothing, 1 - light, 2 - temp, 3 - sound, 4 - accel, 5 - all
+  if (millis() - lcd_timestamp >= lcd_refresh_int) // Implement screen refresh rate 
+  {
+    lcd_timestamp=millis();
+
+    if (screen==1)
+    {
+      display_light();
+    }
+    else if (screen==2)
+    {
+      display_temp();
+    }
+    else if (screen==3)
+    {
+      display_sound();
+    }
+    else if (screen==4)
+    {
+      display_accel();
+    }
+    else if (screen==5)
+    {
+      display_all();
+    }
+    else
+    {
+      display_logo();
+    }
+  }
+  
+  if(buttonState)
+  {
+    play_pitch(xz_angle_to_c_major_frequency(), xy_angle_to_duration());
+  }
+} // end void() loop
+
+/////
+
+/// My music stuff ///
+
+int xy_angle_to_duration()
+{
+  double a = (double)gx;
+  double c = (double)gy;
+  double theta = atan2(c, a);
+  double alpha = theta/M_PI_2;
+  double lambda = constrain(alpha*alpha, 0, 1);
+  double durationF = 100*(1 - lambda) + 250*lambda;
+  int duration = (int)durationF;
+  return duration;
+}
+
+int xz_angle_to_frequency()
+{
+  return xz_angle_to_index(110, 880);
+}
+
+const int c_major_pitches[] = {
+  131, 147, 165, 175, 196, 220, 247,
+  262, 294, 330, 349, 392, 440, 494,
+  523
+};
+    
+int xz_angle_to_c_major_frequency()
+{
+  int pitch_ix = xz_angle_to_index(0, 14);
+  return c_major_pitches[pitch_ix];
+}
+
+int xz_angle_to_index(int min, int max)
+{
+  double a = (double)gx;
+  double b = (double)gz;
+  double theta = atan2(b, a);
+  double lambda = constrain((theta + M_PI_2)/M_PI, 0, 1);
+  double indexF = ((double)min)*(1 - lambda) + ((double)max)*lambda;
+  return (int)indexF;
+}
+
+void fancy_beep()
+{
+  // play an A at 440 Hz for 500 milliseconds
+  play_pitch(440, 500);
+  play_pitch(xz_angle_to_frequency(), 500);
+  play_pitch(440, 500);
+}
+
+void play_pitch(int freq, int duration)
+{ 
+  // freq: frequency in Hz
+  // duration: in milliseconds
+  tone(BUZZER_PIN, freq, duration);
+  // wait for the tone to finish playing
+  delay(duration);
+}
+
+
+/////
+
+void read_serial_loop()
+{
+ while (Serial.available())
   {    
     // Read serial data
     byte data0 = Serial.read();
@@ -139,7 +251,8 @@ void loop()
     }
     else if (data0 == 0x02) // Command is to control PWM Buzzer pin
     {
-      buzzer_beep(); // Plays some beeping noises
+      fancy_beep(); // Plays some beeping noises
+      //buzzer_beep();
     }
     else if (data0 == 0x03)  // Command is to control LED
     {
@@ -216,10 +329,11 @@ void loop()
         GRAVITY_enabled = false;
     }
   }
+}
 
-  /*** Transmit data ***/
-
-
+// global value, all sensors
+void write_sensor_data_serial()
+{
   if (GRAVITY_enabled == true)
   {
     value = gx1; 
@@ -256,44 +370,10 @@ void loop()
     Serial.write((byte) (value >> 8));
     Serial.write((byte) (value & 0x00FF));
   }
-
-  /*** Display data on 5110 LCD ***/
-  // 0 - nothing, 1 - light, 2 - temp, 3 - sound, 4 - accel, 5 - all
-  if (millis() - lcd_timestamp >= lcd_refresh_int) // Implement screen refresh rate 
-  {
-    lcd_timestamp=millis();
-
-    if (screen==1)
-    {
-      display_light();
-    }
-    else if (screen==2)
-    {
-      display_temp();
-    }
-    else if (screen==3)
-    {
-      display_sound();
-    }
-    else if (screen==4)
-    {
-      display_accel();
-    }
-    else if (screen==5)
-    {
-      display_all();
-    }
-    else
-    {
-      display_logo();
-    }
-  }
-
-} // end void() loop
+}
 
 void read_button() // Function that checks if button is being pressed
 {
-  static boolean buttonState = false;
   static boolean gone_low = true;
   int button_debounce=250; // Set minimum time between button presses (debounce time)
   static unsigned long button_timestamp=0;
@@ -303,11 +383,11 @@ void read_button() // Function that checks if button is being pressed
     button_timestamp=millis();
     buttonState=!buttonState;
     digitalWrite(DISPLAY_LED_PIN, buttonState); // Toggle the LCD backlight when the button is pressed
-    //    screen+=1;
-    //    if (screen>=4)
-    //    {
-    //      screen=0;
-    //    }
+    /*screen+=1;
+    if (screen>=4)
+    {
+      screen=0;
+    }*/
     gone_low=false;
   }
   if (digitalRead(BUTTON_PIN)==LOW)  // Prevents flashing when button is held
@@ -507,9 +587,11 @@ int frequency(char note)
   // in single quotes.
 
   char names[] = { 
-    'c', 'd', 'e', 'f', 'g', 'a', 'b', 'C'                                                                                           };
+    'c', 'd', 'e', 'f', 'g', 'a', 'b', 'C'
+    };
   int frequencies[] = {
-    262, 294, 330, 349, 392, 440, 494, 523                                                                                          };
+    262, 294, 330, 349, 392, 440, 494, 523
+    };
 
   // Now we'll search through the letters in the array, and if
   // we find it, we'll return the frequency for that note.
@@ -557,9 +639,11 @@ void play_banner() // Play the Star-Spangled Banner
 
 void playNote_banner(char note, int duration) {  // Set notes for Star-Spangled Banner
   char names[] = { 
-    'g', 'a', 'b', 'c', 'd', 'e', 'f', 'G'                                                                                               };
+    'g', 'a', 'b', 'c', 'd', 'e', 'f', 'G'
+    };
   int tones[] = { 
-    2551, 2273, 2024, 1915, 1700, 1515, 1433, 1275                                                                                           }; // Note frequencies - range from G3 to G4
+    2551, 2273, 2024, 1915, 1700, 1515, 1433, 1275
+    }; // Note periods in micro seconds - range from G3 to G4
 
   for (int i = 0; i < 9; i++) {   // Play the tone corresponding to the note name
     if (names[i] == note) {
